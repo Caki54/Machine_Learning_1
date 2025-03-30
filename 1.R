@@ -1,132 +1,113 @@
----
-  title: "LAB6"
-author: "Łukasz Cakała"
-date: "2024-06-15"
-output: html_document
----
-  
-  ## Instalacja i ładowanie pakietów
-  
-  ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-
-# Instalacja pakietów
-install.packages("magick")
-install.packages("tibble")
-install.packages("tensorflow")
+# Install keras and tensorflow packages from CRAN
 install.packages("keras")
-install.packages("reticulate")
+install.packages("tensorflow")
 
-# Ładowanie pakietów
-library(magick)
-library(tibble)
-library(tensorflow)
+
+# Load the necessary libraries
 library(keras)
+library(tensorflow)
+library(imager)
+library(ggplot2)
+library(caret)
+library(magick)
 library(reticulate)
 
-# Utworzenie nowego wirtualnego środowiska
-virtualenv_create("r-tensorflow")
+# Use the virtual environment
+use_virtualenv("C:/Users/lukca/Documents/myenv", required = TRUE)
 
-# Aktywacja nowego środowiska
-use_virtualenv("r-tensorflow", required = TRUE)
+# Ensure Pillow is installed
+py_install("Pillow")
 
-# Instalacja najnowszych wersji TensorFlow i Keras
-py_install(c("tensorflow", "keras"), envname = "r-tensorflow")
-
-# Ścieżka do głównego folderu ze zdjęciami
-main_folder_path <- "C:/Users/lukca/Desktop/8/MUM_2/LAB6/PetImages"
-
-safe_process_image <- function(image_path) {
-  tryCatch({
-    image <- image_read(image_path)
-    image <- image %>% 
-      image_resize("100x100!")%>%
-      image_convert(colorspace = "gray")
-    as.numeric(image_data(image))
-  }, error = function(e) {
-    message(paste("Błąd podczas przetwarzania obrazu:", image_path))
-    message(e)
-    return(NULL) # Zwraca NULL, jeśli obraz jest uszkodzony
-  })
-}
-
-# Lista etykiet (podfolderów)
-labels <- list.dirs(main_folder_path, full.names = TRUE, recursive = FALSE)
-
-# Tworzenie pustej listy do przechowywania danych
-image_data_list <- list()
-image_labels <- c()
-file_names <- c()
-
-# Iteracja po wszystkich etykietach (podfolderach)
-for (label in labels) {
-  image_files <- list.files(label, pattern = "\\.(jpg|jpeg|png|bmp|gif)$", full.names = TRUE)
-  for (image_file in image_files) {
-    image_data <- safe_process_image(image_file)
-    if (!is.null(image_data)) {  # Jeśli obraz został poprawnie wczytany
-      image_data_list <- c(image_data_list, list(image_data))
-      image_labels <- c(image_labels, basename(label)) # Nazwa folderu jako etykieta
-      file_names <- c(file_names, basename(image_file)) # Nazwa pliku
-    }
-  }
-}
-
-# Tworzenie tibble z danymi obrazów i etykietami
-image_dataset <- tibble(
-  file_name = file_names,
-  label = image_labels,
-  pixel_data = image_data_list
-)
-
-# Wyświetlenie pierwszego obrazu w datasetcie
-first_image_path <- file.path(main_folder_path, image_dataset$label[1], image_dataset$file_name[1])
-image_read(first_image_path) %>% plot()
-
-# Konwersja listy wektorów pikseli do macierzy
-image_data_matrix <- do.call(rbind, image_dataset$pixel_data)
-
-# Konwersja etykiet do formatu binarnego (0 dla kota, 1 dla psa)
-image_labels_binary <- as.integer(factor(image_dataset$label, levels = c("Cat", "Dog")))
-
-# Reshape macierzy danych do formatu 4D (liczba obrazów, wysokość, szerokość, liczba kanałów)
-image_data_reshaped <- array(image_data_matrix, dim = c(nrow(image_data_matrix), 100, 100, 1))
-
-set.seed(10) # dla powtarzalności wyników
-indices <- sample(1:nrow(image_data_reshaped), size = 0.8 * nrow(image_data_reshaped))
-
-x_train <- image_data_reshaped[indices, , , ]
-y_train <- image_labels_binary[indices]
-y_train <- y_train - 1
-
-x_test <- image_data_reshaped[-indices, , , ]
-y_test <- image_labels_binary[-indices]
-y_test <- y_test - 1
-
-model <- keras_model_sequential()
-
-# Dodawanie warstw do modelu
-model %>%
-  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = 'relu', input_shape = c(100, 100, 1)) %>%
-  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
-  layer_conv_2d(filters = 16, kernel_size = c(3, 3), activation = 'relu') %>%
-  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
-  layer_flatten() %>%
-  layer_dense(units = 128, activation = 'relu') %>%
-  layer_dense(units = 16, activation = 'relu') %>%
-  layer_dense(units = 1, activation = 'sigmoid')
-
-# Kompilacja modelu
-model %>% compile(
-  optimizer = optimizer_adam(learning_rate = 0.001),
-  loss = 'binary_crossentropy',
-  metrics = c('accuracy')
-)
-
-model %>% fit(
-  x_train, y_train,
-  epochs = 10,
-  batch_size = 32,
+# Set up the data generators
+train_datagen <- image_data_generator(
+  rescale = 1/255,
   validation_split = 0.2
 )
 
-model %>% evaluate(x_test, y_test)
+# Custom generator to ensure data repetition
+custom_flow_images_from_directory <- function(directory, generator, target_size, batch_size, class_mode, subset, repeat_times) {
+  dataset <- flow_images_from_directory(
+    directory = directory,
+    generator = generator,
+    target_size = target_size,
+    batch_size = batch_size,
+    class_mode = class_mode,
+    subset = subset
+  )
+  
+  repeated_dataset <- reticulate::iterate(dataset, function(x) x)
+  for (i in 1:(repeat_times - 1)) {
+    repeated_dataset <- c(repeated_dataset, reticulate::iterate(dataset, function(x) x))
+  }
+  return(repeated_dataset)
+}
+
+
+# Train and validation generators with custom repetition
+train_generator <- custom_flow_images_from_directory(
+  directory = 'C:/Users/lukca/Desktop/8/MUM_2/projekt/flowers',
+  generator = train_datagen,
+  target_size = c(128, 128),
+  batch_size = 32,
+  class_mode = 'categorical',
+  subset = 'training',
+  repeat_times = repeat_times
+)
+
+validation_generator <- custom_flow_images_from_directory(
+  directory = 'C:/Users/lukca/Desktop/8/MUM_2/projekt/flowers',
+  generator = train_datagen,
+  target_size = c(128, 128),
+  batch_size = 32,
+  class_mode = 'categorical',
+  subset = 'validation',
+  repeat_times = repeat_times
+)
+
+
+
+# Display a random image from the dataset
+random_image_path <- sample(list.files('C:/Users/lukca/Desktop/8/MUM_2/projekt/flowers', recursive = TRUE, full.names = TRUE), 1)
+random_image <- load.image(random_image_path)
+plot(random_image)
+
+# Get the number of classes
+num_classes <- length(unique(train_generator$class_indices))
+
+# Define the model using the Functional API from TensorFlow, ensuring integer shape values
+input <- tf$keras$layers$Input(shape = c(as.integer(128), as.integer(128), as.integer(3)))
+conv1 <- tf$keras$layers$Conv2D(filters = as.integer(32), kernel_size = c(as.integer(3), as.integer(3)), activation = 'relu')(input)
+pool1 <- tf$keras$layers$MaxPooling2D(pool_size = c(as.integer(2), as.integer(2)))(conv1)
+conv2 <- tf$keras$layers$Conv2D(filters = as.integer(64), kernel_size = c(as.integer(3), as.integer(3)), activation = 'relu')(pool1)
+pool2 <- tf$keras$layers$MaxPooling2D(pool_size = c(as.integer(2), as.integer(2)))(conv2)
+flat <- tf$keras$layers$Flatten()(pool2)
+dense1 <- tf$keras$layers$Dense(units = as.integer(128), activation = 'relu')(flat)
+dropout <- tf$keras$layers$Dropout(rate = 0.5)(dense1)
+output <- tf$keras$layers$Dense(units = as.integer(num_classes), activation = 'softmax')(dropout)
+
+# Create the model
+model <- tf$keras$Model(inputs = input, outputs = output)
+
+# Compile the model
+model$compile(
+  optimizer = tf$keras$optimizers$Adam(),
+  loss = 'categorical_crossentropy',
+  metrics = list('accuracy')
+)
+
+# Calculate steps_per_epoch and validation_steps
+steps_per_epoch <- as.integer(ceiling(train_generator$n / train_generator$batch_size))
+validation_steps <- as.integer(ceiling(validation_generator$n / validation_generator$batch_size))
+
+# Train the model
+history <- model$fit(
+  train_generator,
+  epochs = as.integer(10),
+  validation_data = validation_generator,
+  steps_per_epoch = steps_per_epoch,
+  validation_steps = validation_steps
+)
+
+# Save the training history to a CSV file
+history_df <- as.data.frame(history$history)
+write.csv(history_df, "training_history.csv", row.names = FALSE)
